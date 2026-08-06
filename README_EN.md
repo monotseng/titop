@@ -71,7 +71,10 @@ export TITOP_MYSQL_PASSWORD='password'
 - `INFORMATION_SCHEMA.CLUSTER_TIDB_TRX`
 - `INFORMATION_SCHEMA.CLUSTER_CONFIG`
 
-Required privileges vary by TiDB version and security policy. Use a dedicated read-only monitoring account with only the diagnostic privileges it needs.
+> [!WARNING]
+> **Do not run TiTop as `root` or with another highly privileged administrative account.** Create a dedicated read-only monitoring account so that exposed credentials, accidental operations, or a compromised runtime environment cannot put the entire cluster at risk.
+
+Exact privileges vary by TiDB version and cluster security policy. Follow the principle of least privilege and grant only the read access required for the diagnostic system tables listed above. Do not grant `SUPER`, DDL, DML, user-management, or grant-management privileges. Where possible, restrict the account to trusted source addresses, use a unique strong password, and rotate it regularly. After provisioning the account, verify that it can read the required monitoring data but cannot modify application data or cluster configuration.
 
 ## Command-line Options
 
