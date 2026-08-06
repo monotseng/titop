@@ -223,7 +223,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 		paint(color, green, fmt.Sprintf("%6.0f", s.Active)),
 		paint(color, positiveBad(s.ErrorRate), fmt.Sprintf("%7.2f", s.ErrorRate)),
 		paint(color, nodeColor(s), fmt.Sprintf("TiDB:%d TiKV:%d PD:%d", s.TiDBUp, s.TiKVUp, s.PDUp)))
-	fmt.Printf(" LONG QUERY (>=%s) %s  LONG TXN (>=%s) %s  CLUSTER TLS %s\n",
+	fmt.Printf(" LONG QUERY (>=%s) %s  LONG TXN (>=%s) %s  TLS %s\n",
 		shortThreshold(longQueryThreshold), sqlMetric(sqlClient != nil && sqlSnap.sessionErr == nil, sqlSnap.longQueries, color),
 		shortThreshold(longTxnThreshold), sqlMetric(sqlClient != nil && sqlSnap.transactionErr == nil, sqlSnap.longTransactions, color),
 		clusterTLSMetric(sqlClient != nil && sqlSnap.tlsErr == nil, sqlSnap.tlsStatus, color))

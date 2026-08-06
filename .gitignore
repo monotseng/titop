@@ -1,0 +1,7 @@
+/bin/
+/release/
+/tmp/
+/.gocache/
+/.gopath/
+*.log
+*.pid

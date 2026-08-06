@@ -1,5 +1,7 @@
 # TiTop
 
+[English](README_EN.md) | **简体中文**
+
 TiTop 是一个面向 TiDB 集群的轻量级实时终端监控工具，交互体验参考 `oratop`。它直接查询 Prometheus，并可选连接 TiDB SQL 端口，在一个终端中集中展示集群负载、节点状态、TiKV 请求、线程池 CPU、SQL 类型和活跃会话。
 
 TiTop 适合日常巡检、故障现场观察、压测监控和远程终端使用。Prometheus 是必需数据源；TiDB 数据库账号是可选项，仅在需要活跃会话、长事务和组件间 TLS 状态时使用。
@@ -268,4 +270,4 @@ Oracle 的 ASH 和等待事件无法直接映射到 TiDB Prometheus 指标。TiT
 
 ## License
 
-本仓库当前未包含开源许可证。发布到 GitHub 前，请根据项目计划添加合适的 `LICENSE` 文件；未添加许可证时，默认著作权规则仍然适用。
+TiTop 采用 [Apache License 2.0](LICENSE) 开源。第三方依赖的许可证信息请参阅 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
