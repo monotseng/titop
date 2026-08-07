@@ -166,7 +166,9 @@ SQL 页面不会重复展示 TOP 5 TiKV Request，以便为 SQL 信息保留更�
 
 提供 SQL 凭据后，TiTop 查询 `CLUSTER_PROCESSLIST`，并以实例和 digest 关联最近十分钟的 `CLUSTER_STATEMENTS_SUMMARY`。页面最多显示 30 个非 Sleep 会话，按执行时间降序排列。
 
-`DIGEST_ID` 是由 TiDB 原始 digest 生成的 13 位稳定短标识，使用体验类似 Oracle SQL ID，但不与 Oracle SQL ID 等价。相同 digest 始终得到相同 `DIGEST_ID`。
+`DIGEST_ID` 是由 TiDB 原始 digest 再次生成的 13 位稳定短标识，使用体验类似 Oracle SQL ID，但不与 Oracle SQL ID 等价。TiDB 原始 digest 和完整 SQL 文本都比较长，在有限宽度的终端中直接展示会挤压其他关键列；`DIGEST_ID` 可以用较短的固定宽度快速对照多个活跃会话。
+
+相同的 TiDB digest 始终得到相同的 `DIGEST_ID`。当两条 SQL 文本看起来非常相似时，可以先通过 `DIGEST_ID` 判断它们是否属于同一个 TiDB digest；不同 `DIGEST_ID` 表示原始 digest 一定不同。由于 `DIGEST_ID` 是截短后的标识，理论上仍存在极低的哈希碰撞可能，因此它适合终端快速识别和关联，不应替代 TiDB 原始 digest 作为审计或程序判断依据。需要严格确认时，应查询并比较完整的原始 digest。
 
 会话内存达到 100 MiB，或磁盘临时空间达到 1 GiB 时，会话连接 ID 加粗标红。TiDB 偶尔可能返回无符号下溢的异常 MEM/DISK 值；TiTop 会将超出有效整数范围的值按零处理，避免整页查询失败。
 
@@ -189,6 +191,26 @@ KV 子视图颜色阈值：`MVCC AMP` 达到 `2x` 显示黄色、达到 `10x` �
 - `ERR/s` 和 `ERR%` 分别表示每秒错误数和区间错误比例；`PROC KEYS/s`、`WRITE KEYS/s`、`AFFECT ROWS/s`、`MEM/s` 和 `DISK/s` 均为区间增量除以实际采样时长。
 - 第一次采集只建立基线，下一次刷新开始显示负载。计数器回退、TiDB 重启或 summary 清空时不会产生负增量，并显示 `RESET DETECTED`。
 - `MEM/s` 和 `DISK/s` 由 statement summary 的平均单次用量乘以区间执行次数后再除以时长，表示 SQL 资源消耗速率，不代表当前驻留内存或磁盘占用。
+
+`TIME LOAD` 的计算方式为：
+
+```text
+TIME LOAD = 区间内 SQL 总执行时间 / 实际采样时长
+```
+
+例如采样时间为 10 秒，某 Schema 的 SQL 总执行时间增量为 50 秒，则 `TIME LOAD` 为 `5.00s/s`，表示该 Schema 在该区间平均产生了约 5 个并发数据库时间单位。它包含 CPU 执行以及锁、TiKV RPC、Coprocessor、网络、磁盘和事务提交等等待时间，因此不是 CPU 使用率。
+
+| 现象 | 建议理解 |
+| --- | --- |
+| `TIME LOAD` 高、QPS 高、`AVG LAT` 正常 | 通常是高吞吐业务负载，不一定异常 |
+| `TIME LOAD` 高、`AVG LAT` 高 | 关注慢 SQL、锁等待或下游延迟 |
+| `TIME LOAD` 高、`ERR%` 高 | 关注 SQL 执行错误 |
+| `TIME LOAD` 高、`MVCC AMP` 高 | 关注 MVCC 历史版本读取放大 |
+| `TIME LOAD` 高、`COP/EXEC` 高 | 单次 SQL 可能扫描大量 Region |
+| `TIME LOAD` 高、`BACKOFF/s` 高 | 关注锁冲突、Region 或 RPC 重试 |
+| `WRITE QPS`、`WRITE SIZE/s` 高 | 该 Schema 当前写入负载较高 |
+
+因此 `TIME LOAD` 适合用作 Top Schema 的默认排序和排查入口，但不能单独证明某个 Schema 存在性能异常，应结合 Overview 和 KV 子视图共同判断。
 
 Statement Summary 可能因 `tidb_stmt_summary_max_stmt_count` 限制而淘汰 digest，因此该面板适合实时性能观察，不应作为审计级精确统计。
 

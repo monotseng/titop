@@ -166,7 +166,9 @@ The SQL page omits the repeated TOP 5 TiKV Request panel to leave more space for
 
 With SQL credentials configured, TiTop queries `CLUSTER_PROCESSLIST` and joins `CLUSTER_STATEMENTS_SUMMARY` by instance and digest over the most recent ten minutes. Up to 30 non-Sleep sessions are shown in descending elapsed-time order.
 
-`DIGEST_ID` is a stable 13-character compact identifier derived from the TiDB digest. It provides an Oracle SQL ID-like operator experience, but is not compatible or interchangeable with Oracle SQL ID.
+`DIGEST_ID` is a stable 13-character compact identifier derived again from the original TiDB digest. It provides an Oracle SQL ID-like operator experience, but is not compatible or interchangeable with Oracle SQL ID. Both the original TiDB digest and full SQL text are too long to display efficiently in a width-constrained terminal; `DIGEST_ID` provides a short, fixed-width value for quickly comparing active sessions without crowding out other important columns.
+
+The same TiDB digest always produces the same `DIGEST_ID`. When two SQL texts look very similar, operators can first compare their `DIGEST_ID` values to determine whether they map to the same TiDB digest; different `DIGEST_ID` values guarantee different original digests. Because `DIGEST_ID` is shortened, a very small theoretical hash-collision risk remains. It is intended for fast terminal identification and correlation, not as a replacement for the original TiDB digest in audits or programmatic decisions. Compare the complete original digests whenever strict identity is required.
 
 The connection ID is highlighted in red when session memory reaches 100 MiB or disk spill reaches 1 GiB. TiDB can occasionally expose an unsigned-underflow MEM/DISK value; TiTop treats values outside the valid signed range as zero instead of failing the entire page.
 
@@ -189,6 +191,26 @@ KV subview colors use these thresholds: `MVCC AMP` is yellow at `2x` and red at 
 - `ERR/s` and `ERR%` are the error rate per second and the interval error percentage. `PROC KEYS/s`, `WRITE KEYS/s`, `AFFECT ROWS/s`, `MEM/s`, and `DISK/s` are interval deltas divided by the actual sample duration.
 - The first collection establishes a baseline, so load appears after the next refresh. Counter rollback, TiDB restart, or statement-summary reset never produces a negative delta and is reported as `RESET DETECTED`.
 - `MEM/s` and `DISK/s` multiply statement-summary average per-execution usage by interval executions and divide by duration. They represent SQL resource-consumption rates, not current resident memory or disk occupancy.
+
+`TIME LOAD` is calculated as:
+
+```text
+TIME LOAD = total SQL execution time in the interval / actual sample duration
+```
+
+For example, if a schema accumulates 50 seconds of SQL execution time during a 10-second sample, its `TIME LOAD` is `5.00s/s`, representing approximately five concurrent database-time units during that interval. It includes CPU execution and waits for locks, TiKV RPC, Coprocessor, network, disk, and transaction commit, so it is not CPU utilization.
+
+| Observation | Suggested interpretation |
+| --- | --- |
+| High `TIME LOAD`, high QPS, normal `AVG LAT` | Usually a high-throughput workload and not necessarily abnormal |
+| High `TIME LOAD` and high `AVG LAT` | Investigate slow SQL, lock waits, or downstream latency |
+| High `TIME LOAD` and high `ERR%` | Investigate SQL execution errors |
+| High `TIME LOAD` and high `MVCC AMP` | Investigate MVCC historical-version read amplification |
+| High `TIME LOAD` and high `COP/EXEC` | A statement might scan many Regions per execution |
+| High `TIME LOAD` and high `BACKOFF/s` | Investigate lock conflicts, Region events, or RPC retries |
+| High `WRITE QPS` and `WRITE SIZE/s` | The schema currently has a high write workload |
+
+`TIME LOAD` is therefore a useful default ordering and investigation entry point for Top Schema, but it does not prove that a schema has a performance problem by itself. Interpret it together with the Overview and KV subviews.
 
 Statement digests can be evicted because of `tidb_stmt_summary_max_stmt_count`, so this view is intended for real-time performance observation rather than audit-grade accounting.
 
