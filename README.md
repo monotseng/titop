@@ -192,6 +192,23 @@ KV 子视图颜色阈值：`MVCC AMP` 达到 `2x` 显示黄色、达到 `10x` �
 - 第一次采集只建立基线，下一次刷新开始显示负载。计数器回退、TiDB 重启或 summary 清空时不会产生负增量，并显示 `RESET DETECTED`。
 - `MEM/s` 和 `DISK/s` 由 statement summary 的平均单次用量乘以区间执行次数后再除以时长，表示 SQL 资源消耗速率，不代表当前驻留内存或磁盘占用。
 
+#### Schema QPS 与 Cluster QPS
+
+Cluster Activity 的 `QPS(1m)` 来自 Prometheus `tidb_executor_statement_total` 最近一分钟的 rate，用于观察整个 TiDB 集群的总体 SQL 吞吐。Schema Load 的 `QPS` 则来自 `CLUSTER_STATEMENTS_SUMMARY` 相邻快照的 `EXEC_COUNT` 差值，再除以标题中的实际 `INTERVAL`。两者的数据源、时间窗口和统计口径均不相同，因此各 Schema QPS 相加后不要求等于 Cluster QPS。
+
+> [!IMPORTANT]
+> **Schema QPS 只能作为 Schema 相对活跃度和负载趋势的参考，不是准确、完整的 Schema 请求计量。** `SCHEMA_NAME` 表示 SQL 执行时连接所选定的默认 Schema，并不一定是 SQL 实际访问对象所在的 Schema；跨 Schema SQL 也无法按真实访问比例拆分。
+
+Schema QPS 还可能受到以下因素影响：
+
+- Schema QPS 使用几秒钟的实际采样区间，而 Cluster QPS 是一分钟平滑值。
+- Statement Summary 可能因容量限制淘汰 digest，造成统计缺失。
+- TiDB 重启、Summary 清空、窗口切换或采集失败可能导致区间数据不完整。
+- `tidb_stmt_summary_internal_query` 等配置会影响哪些 SQL 进入 Statement Summary。
+- 没有选择默认 Schema 的 SQL 会归入 `(none)`，即使它通过完整限定名访问了某个业务 Schema。
+
+因此，应使用 Cluster QPS 判断集群总体吞吐，使用 Schema QPS 比较当前哪些默认 Schema 相对更活跃；容量规划、计费、审计或需要精确请求量时，不应使用 Schema QPS 作为唯一依据。
+
 `TIME LOAD` 的计算方式为：
 
 ```text

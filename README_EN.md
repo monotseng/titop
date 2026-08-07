@@ -192,6 +192,23 @@ KV subview colors use these thresholds: `MVCC AMP` is yellow at `2x` and red at 
 - The first collection establishes a baseline, so load appears after the next refresh. Counter rollback, TiDB restart, or statement-summary reset never produces a negative delta and is reported as `RESET DETECTED`.
 - `MEM/s` and `DISK/s` multiply statement-summary average per-execution usage by interval executions and divide by duration. They represent SQL resource-consumption rates, not current resident memory or disk occupancy.
 
+#### Schema QPS versus Cluster QPS
+
+Cluster Activity `QPS(1m)` comes from the one-minute Prometheus rate of `tidb_executor_statement_total` and represents overall SQL throughput across the TiDB cluster. Schema Load `QPS` comes from the `EXEC_COUNT` difference between consecutive `CLUSTER_STATEMENTS_SUMMARY` snapshots divided by the actual title `INTERVAL`. The data sources, windows, and accounting semantics differ, so the sum of Schema QPS values is not expected to equal Cluster QPS.
+
+> [!IMPORTANT]
+> **Schema QPS is only a reference for relative schema activity and workload trends; it is not an exact or complete per-schema request count.** `SCHEMA_NAME` is the default schema selected on the connection when a statement executes, which might not be the schema containing the objects actually accessed. Cross-schema SQL cannot be apportioned by its real access share either.
+
+Schema QPS can also be affected by:
+
+- A short actual sample interval of several seconds, versus the one-minute smoothing window used by Cluster QPS.
+- Statement digest eviction caused by Statement Summary capacity limits.
+- TiDB restarts, summary clearing, window transitions, or collection failures that leave an interval incomplete.
+- Settings such as `tidb_stmt_summary_internal_query`, which control which statements enter Statement Summary.
+- Statements without a selected default schema being attributed to `(none)`, even when fully qualified object names access a business schema.
+
+Use Cluster QPS to assess total cluster throughput and Schema QPS to compare which default schemas are relatively more active at the moment. Do not use Schema QPS as the sole basis for capacity planning, billing, auditing, or any requirement for exact request counts.
+
 `TIME LOAD` is calculated as:
 
 ```text
