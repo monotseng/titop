@@ -104,6 +104,7 @@ export TITOP_MYSQL_PASSWORD='password'
 | `i` | TiDB、TiKV、PD 全部节点 |
 | `k` | TiKV 线程池 CPU |
 | `s` | SQL 类型和活跃会话 |
+| `l` | Schema Load 性能面板 |
 | `w` | TiKV 请求耗时 |
 | `p` | 暂停或继续自动刷新 |
 | `Space` | 立即刷新 |
@@ -164,6 +165,17 @@ SQL 页面不会重复展示 TOP 5 TiKV Request，以便为 SQL 信息保留更�
 `DIGEST_ID` 是由 TiDB 原始 digest 生成的 13 位稳定短标识，使用体验类似 Oracle SQL ID，但不与 Oracle SQL ID 等价。相同 digest 始终得到相同 `DIGEST_ID`。
 
 会话内存达到 100 MiB，或磁盘临时空间达到 1 GiB 时，会话连接 ID 加粗标红。TiDB 偶尔可能返回无符号下溢的异常 MEM/DISK 值；TiTop 会将超出有效整数范围的值按零处理，避免整页查询失败。
+
+### Schema Load
+
+提供 SQL 凭据后，按 `l` 可打开 Schema Load 面板。TiTop 从 `CLUSTER_STATEMENTS_SUMMARY` 读取集群各 TiDB 实例的累计计数，并结合 `CLUSTER_STATEMENTS_SUMMARY_HISTORY` 衔接 summary 刷新窗口。数据先按实例、Schema 和 summary 窗口聚合，再通过相邻快照差值计算最近刷新区间的负载，默认按 `TIME LOAD` 降序显示 Top 15 Schema。
+
+- `QPS`、`AVG LAT` 和 `TIME LOAD` 表示最近一次有效采样区间；`TIME LOAD` 是 Schema 总执行时间除以区间时长，`1.00s/s` 约等于持续消耗一个执行时间核。
+- `EXEC`、`ERR`、`PROC KEYS`、`WRITE KEYS`、`AFFECT ROWS`、`MEM Σ` 和 `DISK Σ` 从 TiTop 建立初始基线后累计，重启 TiTop 后重新计算。
+- 第一次采集只建立基线，下一次刷新开始显示负载。计数器回退、TiDB 重启或 summary 清空时不会产生负增量，并显示 `RESET DETECTED`。
+- `MEM Σ` 和 `DISK Σ` 由 statement summary 的平均单次用量乘以执行次数后累计，表示观测期间的 SQL 资源使用总量，不代表当前驻留内存或磁盘占用。
+
+Statement Summary 可能因 `tidb_stmt_summary_max_stmt_count` 限制而淘汰 digest，因此该面板适合实时性能观察，不应作为审计级精确统计。
 
 ## 颜色和阈值
 

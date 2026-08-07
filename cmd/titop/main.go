@@ -26,6 +26,7 @@ type view int
 const (
 	instances view = iota
 	sqlTypes
+	schemaLoads
 	waits
 	tikvThreads
 	help
@@ -81,8 +82,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var sqlClient *tidbsql.Client
+	var schemaTracker *tidbsql.SchemaTracker
 	if userSet {
 		sqlClient = tidbsql.New(mysqlUser, mysqlPassword, timeout)
+		schemaTracker = tidbsql.NewSchemaTracker()
 		defer sqlClient.Close()
 	}
 	keys := make(chan byte, 1)
@@ -97,7 +100,7 @@ func main() {
 	current, previous, paused := instances, instances, false
 	color := !noColor && !once && !plain && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && isTerminal(os.Stdout)
 	snap := collect(ctx, promClient, timeout, clusterName)
-	sqlSnap := collectSQL(ctx, sqlClient, snap.Instances, timeout, longQueryThreshold, longTxnThreshold)
+	sqlSnap := collectSQL(ctx, sqlClient, schemaTracker, snap.Instances, timeout, longQueryThreshold, longTxnThreshold)
 	for {
 		draw(endpoint, snap, sqlSnap, sqlClient, current, paused, interval, longQueryThreshold, longTxnThreshold, highQPS, highTPS, plain || once, color)
 		if once {
@@ -130,6 +133,8 @@ func main() {
 				current = instances
 			case 's', 'S':
 				current = sqlTypes
+			case 'l', 'L':
+				current = schemaLoads
 			case 'w', 'W':
 				current = waits
 			case 'k', 'K':
@@ -142,7 +147,7 @@ func main() {
 		}
 		if refresh {
 			snap = collect(ctx, promClient, timeout, clusterName)
-			sqlSnap = collectSQL(ctx, sqlClient, snap.Instances, timeout, longQueryThreshold, longTxnThreshold)
+			sqlSnap = collectSQL(ctx, sqlClient, schemaTracker, snap.Instances, timeout, longQueryThreshold, longTxnThreshold)
 		}
 	}
 }
@@ -153,25 +158,42 @@ type sqlSnapshot struct {
 	sessionErr, transactionErr    error
 	tlsStatus                     string
 	tlsErr                        error
+	schemaLoad                    tidbsql.SchemaLoadSnapshot
+	schemaErr                     error
 }
 
-func collectSQL(ctx context.Context, client *tidbsql.Client, instances []monitor.Instance, timeout, longQueryThreshold, longTxnThreshold time.Duration) sqlSnapshot {
+func collectSQL(ctx context.Context, client *tidbsql.Client, tracker *tidbsql.SchemaTracker, instances []monitor.Instance, timeout, longQueryThreshold, longTxnThreshold time.Duration) sqlSnapshot {
 	result := sqlSnapshot{tlsStatus: "N/A"}
 	if client == nil {
 		return result
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := client.Connect(queryCtx, instances); err != nil {
-		result.sessionErr, result.transactionErr, result.tlsErr = err, err, err
+	connectCtx, cancel := context.WithTimeout(ctx, timeout)
+	err := client.Connect(connectCtx, instances)
+	cancel()
+	if err != nil {
+		result.sessionErr, result.transactionErr, result.tlsErr, result.schemaErr = err, err, err, err
 		return result
 	}
+	queryCtx, cancel := context.WithTimeout(ctx, timeout)
 	result.sessions, result.sessionErr = client.ActiveSessions(queryCtx)
+	cancel()
 	if result.sessionErr == nil {
 		result.longQueries = longQueryCount(result.sessions, longQueryThreshold)
 	}
+	queryCtx, cancel = context.WithTimeout(ctx, timeout)
 	result.longTransactions, result.transactionErr = client.LongTransactionCount(queryCtx, longTxnThreshold)
+	cancel()
+	queryCtx, cancel = context.WithTimeout(ctx, timeout)
 	result.tlsStatus, result.tlsErr = client.ClusterTLSStatus(queryCtx)
+	cancel()
+	queryCtx, cancel = context.WithTimeout(ctx, timeout)
+	samples, err := client.SchemaSummary(queryCtx, tracker.LastSample())
+	cancel()
+	if err != nil {
+		result.schemaErr = err
+	} else {
+		result.schemaLoad = tracker.Update(samples, time.Now())
+	}
 	return result
 }
 
@@ -228,7 +250,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 		shortThreshold(longTxnThreshold), sqlMetric(sqlClient != nil && sqlSnap.transactionErr == nil, sqlSnap.longTransactions, color),
 		clusterTLSMetric(sqlClient != nil && sqlSnap.tlsErr == nil, sqlSnap.tlsStatus, color))
 	line(width)
-	if v != sqlTypes {
+	if v != sqlTypes && v != schemaLoads {
 		renderRequests("TOP 5 TiKV CLIENT REQUEST LOAD", limit(s.Requests, 5), color)
 		line(width)
 	}
@@ -241,6 +263,8 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 			line(width)
 			renderActiveSessions(sqlSnap.sessions, sqlSnap.sessionErr, sqlClient.Address(), width, color)
 		}
+	case schemaLoads:
+		renderSchemaLoad(sqlSnap.schemaLoad, sqlSnap.schemaErr, sqlClient, color)
 	case waits:
 		renderRequests("TiKV CLIENT REQUEST LOAD", s.Requests, color)
 	case tikvThreads:
@@ -249,7 +273,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 		renderInstances(s.Instances, color)
 	}
 	line(width)
-	fmt.Print("Keys: [i]nstances ti[k]v threads [s]ql types [w]aits [p]ause [space] refresh [h]elp [q]uit")
+	fmt.Print("Keys: [i]nstances ti[k]v threads [s]ql types schema [l]oad [w]aits [p]ause [space] refresh [h]elp [q]uit")
 	if len(s.Errors) > 0 {
 		fmt.Print(paint(color, red+bold, fmt.Sprintf("  WARN:%d", len(s.Errors))))
 	}
@@ -383,6 +407,49 @@ func renderActiveSessions(rows []tidbsql.Session, err error, address string, wid
 	}
 }
 
+func renderSchemaLoad(snapshot tidbsql.SchemaLoadSnapshot, err error, client *tidbsql.Client, color bool) {
+	title := "SCHEMA LOAD"
+	if client != nil && client.Address() != "" {
+		title += " (target " + client.Address() + ")"
+	}
+	section(color, title)
+	if client == nil {
+		fmt.Println(" (requires TiDB SQL credentials: provide -u and -p)")
+		return
+	}
+	if err != nil {
+		fmt.Println(paint(color, red, " "+err.Error()))
+		return
+	}
+	if snapshot.Baseline {
+		fmt.Println(" (baseline established; load appears after the next refresh)")
+		return
+	}
+	status := fmt.Sprintf(" INTERVAL %s  ACCUMULATED %s  ORDER BY TIME LOAD",
+		shortElapsed(snapshot.Interval), shortElapsed(snapshot.SampledAt.Sub(snapshot.StartedAt)))
+	if snapshot.Reset {
+		status += paint(color, yellow, "  RESET DETECTED")
+	}
+	fmt.Println(status)
+	fmt.Printf(" %-24s %10s %11s %11s %11s %8s %12s %12s %12s %10s %10s\n",
+		"SCHEMA", "QPS", "AVG LAT", "TIME LOAD", "EXEC", "ERR", "PROC KEYS", "WRITE KEYS", "AFFECT ROWS", "MEM Σ", "DISK Σ")
+	if len(snapshot.Rows) == 0 {
+		fmt.Println(" (no schema activity during this interval)")
+		return
+	}
+	for _, row := range limit(snapshot.Rows, 15) {
+		fmt.Printf(" %-24.24s %s %s %s %11s %s %12s %12s %12s %10s %10s\n",
+			row.Schema,
+			paint(color, green, fmt.Sprintf("%10.2f", row.QPS)),
+			paint(color, latencyColor(row.AverageLatency.Seconds()), fmt.Sprintf("%11s", duration(row.AverageLatency.Seconds()))),
+			paint(color, yellow, fmt.Sprintf("%9.2fs/s", row.TimeLoad)),
+			compactNumber(row.Cumulative.Executions),
+			paint(color, positiveBad(row.Cumulative.Errors), fmt.Sprintf("%8s", compactNumber(row.Cumulative.Errors))),
+			compactNumber(row.Cumulative.ProcessedKeys), compactNumber(row.Cumulative.WriteKeys),
+			compactNumber(row.Cumulative.AffectedRows), bytes(row.Cumulative.Memory), bytes(row.Cumulative.Disk))
+	}
+}
+
 func digestID(digest string) string {
 	if digest == "" {
 		return "-"
@@ -464,7 +531,8 @@ func renderRequests(title string, rows []monitor.RequestStat, color bool) {
 func renderHelp(color bool) {
 	section(color, "INTERACTIVE HELP")
 	fmt.Println(" i  All cluster nodes        s  SQL types / active sessions")
-	fmt.Println(" k  TiKV thread-pool CPU     w  TiKV request-time view")
+	fmt.Println(" l  Schema load              k  TiKV thread-pool CPU")
+	fmt.Println(" w  TiKV request-time view")
 	fmt.Println(" p  Pause/resume automatic refresh")
 	fmt.Println(" Space  Refresh immediately  h/?  Toggle this help     q  Quit")
 	fmt.Println(" Prometheus queries are independent; missing metrics appear as warnings.")
@@ -586,6 +654,33 @@ func duration(seconds float64) string {
 	default:
 		return fmt.Sprintf("%.2fs", seconds)
 	}
+}
+func compactNumber(v float64) string {
+	value, suffix := v, ""
+	for _, unit := range []string{"K", "M", "B", "T", "P"} {
+		if value < 1000 {
+			break
+		}
+		value /= 1000
+		suffix = unit
+	}
+	if suffix == "" {
+		return fmt.Sprintf("%.0f", value)
+	}
+	return fmt.Sprintf("%.1f%s", value, suffix)
+}
+func shortElapsed(value time.Duration) string {
+	if value < 0 {
+		value = 0
+	}
+	value = value.Round(time.Second)
+	if value >= time.Hour {
+		return fmt.Sprintf("%dh%02dm", int(value/time.Hour), int(value%time.Hour/time.Minute))
+	}
+	if value >= time.Minute {
+		return fmt.Sprintf("%dm%02ds", int(value/time.Minute), int(value%time.Minute/time.Second))
+	}
+	return fmt.Sprintf("%ds", int(value/time.Second))
 }
 func bytes(v float64) string {
 	const unit = 1024

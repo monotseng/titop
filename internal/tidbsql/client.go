@@ -23,6 +23,19 @@ type Session struct {
 	AverageLatency                                              time.Duration
 }
 
+// SchemaSample is a cumulative statement-summary snapshot for one TiDB
+// instance, schema, and summary window. Average fields are multiplied by the
+// execution count in SQL so every value can be differenced and aggregated.
+type SchemaSample struct {
+	Instance, Schema string
+	WindowBegin      time.Time
+	Counters         SchemaCounters
+}
+
+type SchemaCounters struct {
+	Executions, Errors, Latency, ProcessedKeys, WriteKeys, AffectedRows, Memory, Disk float64
+}
+
 type Client struct {
 	user, password string
 	timeout        time.Duration
@@ -71,6 +84,7 @@ func (c *Client) Connect(ctx context.Context, instances []monitor.Instance) erro
 		cfg.Net = "tcp"
 		cfg.Addr = address
 		cfg.DBName = "information_schema"
+		cfg.ParseTime = true
 		cfg.Timeout = c.timeout
 		cfg.ReadTimeout = c.timeout
 		cfg.WriteTimeout = c.timeout
@@ -153,6 +167,59 @@ func (c *Client) ActiveSessions(ctx context.Context) ([]Session, error) {
 		sessions = append(sessions, row)
 	}
 	return sessions, rows.Err()
+}
+
+const schemaSummaryQuery = `
+SELECT INSTANCE, COALESCE(NULLIF(SCHEMA_NAME, ''), '(none)'), SUMMARY_BEGIN_TIME,
+       SUM(EXEC_COUNT), SUM(SUM_ERRORS), SUM(SUM_LATENCY),
+       SUM(AVG_PROCESSED_KEYS * EXEC_COUNT), SUM(AVG_WRITE_KEYS * EXEC_COUNT),
+       SUM(AVG_AFFECTED_ROWS * EXEC_COUNT), SUM(AVG_MEM * EXEC_COUNT),
+       SUM(AVG_DISK * EXEC_COUNT)
+FROM (
+    SELECT INSTANCE, SCHEMA_NAME, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
+           SUM_LATENCY, AVG_PROCESSED_KEYS, AVG_WRITE_KEYS, AVG_AFFECTED_ROWS,
+           AVG_MEM, AVG_DISK
+    FROM information_schema.CLUSTER_STATEMENTS_SUMMARY
+    UNION ALL
+    SELECT INSTANCE, SCHEMA_NAME, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
+           SUM_LATENCY, AVG_PROCESSED_KEYS, AVG_WRITE_KEYS, AVG_AFFECTED_ROWS,
+           AVG_MEM, AVG_DISK
+    FROM information_schema.CLUSTER_STATEMENTS_SUMMARY_HISTORY
+    WHERE SUMMARY_END_TIME >= DATE_SUB(NOW(), INTERVAL ? SECOND)
+) AS summaries
+GROUP BY INSTANCE, COALESCE(NULLIF(SCHEMA_NAME, ''), '(none)'), SUMMARY_BEGIN_TIME`
+
+// SchemaSummary returns current counters plus any summary windows completed
+// since the previous successful sample. This prevents a refresh boundary from
+// dropping the tail of the previous window.
+func (c *Client) SchemaSummary(ctx context.Context, since time.Time) ([]SchemaSample, error) {
+	if c.db == nil {
+		return nil, fmt.Errorf("TiDB SQL connection is not initialized")
+	}
+	if since.IsZero() {
+		since = time.Now()
+	}
+	lookback := int64(time.Since(since)/time.Second) + 60
+	if lookback < 60 {
+		lookback = 60
+	}
+	rows, err := c.db.QueryContext(ctx, schemaSummaryQuery, lookback)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var samples []SchemaSample
+	for rows.Next() {
+		var sample SchemaSample
+		if err := rows.Scan(&sample.Instance, &sample.Schema, &sample.WindowBegin,
+			&sample.Counters.Executions, &sample.Counters.Errors, &sample.Counters.Latency,
+			&sample.Counters.ProcessedKeys, &sample.Counters.WriteKeys, &sample.Counters.AffectedRows,
+			&sample.Counters.Memory, &sample.Counters.Disk); err != nil {
+			return nil, err
+		}
+		samples = append(samples, sample)
+	}
+	return samples, rows.Err()
 }
 
 // TiDB can expose a negative tracker value through an unsigned MEM/DISK

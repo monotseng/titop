@@ -104,6 +104,7 @@ Set `NO_COLOR=1` to disable colors as well.
 | `i` | All TiDB, TiKV, and PD nodes |
 | `k` | TiKV thread-pool CPU |
 | `s` | SQL types and active sessions |
+| `l` | Schema Load performance view |
 | `w` | TiKV request latency/load |
 | `p` | Pause or resume automatic refresh |
 | `Space` | Refresh immediately |
@@ -164,6 +165,17 @@ With SQL credentials configured, TiTop queries `CLUSTER_PROCESSLIST` and joins `
 `DIGEST_ID` is a stable 13-character compact identifier derived from the TiDB digest. It provides an Oracle SQL ID-like operator experience, but is not compatible or interchangeable with Oracle SQL ID.
 
 The connection ID is highlighted in red when session memory reaches 100 MiB or disk spill reaches 1 GiB. TiDB can occasionally expose an unsigned-underflow MEM/DISK value; TiTop treats values outside the valid signed range as zero instead of failing the entire page.
+
+### Schema Load
+
+With SQL credentials configured, press `l` to open the Schema Load view. TiTop reads cumulative counters from `CLUSTER_STATEMENTS_SUMMARY` across all TiDB instances and uses `CLUSTER_STATEMENTS_SUMMARY_HISTORY` to bridge summary refresh boundaries. It aggregates by instance, schema, and summary window, calculates interval deltas between consecutive snapshots, and displays the top 15 schemas ordered by `TIME LOAD`.
+
+- `QPS`, `AVG LAT`, and `TIME LOAD` describe the latest successful sample interval. `TIME LOAD` is total schema execution time divided by interval duration; `1.00s/s` is approximately one continuously consumed execution-time core.
+- `EXEC`, `ERR`, `PROC KEYS`, `WRITE KEYS`, `AFFECT ROWS`, `MEM Σ`, and `DISK Σ` accumulate after TiTop establishes its initial baseline and reset when TiTop restarts.
+- The first collection establishes a baseline, so load appears after the next refresh. Counter rollback, TiDB restart, or statement-summary reset never produces a negative delta and is reported as `RESET DETECTED`.
+- `MEM Σ` and `DISK Σ` are derived by multiplying statement-summary average per-execution usage by execution count. They represent observed cumulative SQL resource usage, not current resident memory or disk occupancy.
+
+Statement digests can be evicted because of `tidb_stmt_summary_max_stmt_count`, so this view is intended for real-time performance observation rather than audit-grade accounting.
 
 ## Colors and Thresholds
 
