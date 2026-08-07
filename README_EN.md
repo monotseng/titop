@@ -105,6 +105,7 @@ Set `NO_COLOR=1` to disable colors as well.
 | `k` | TiKV thread-pool CPU |
 | `s` | SQL types and active sessions |
 | `l` | Schema Load performance view |
+| `o` | Toggle the Schema Overview and KV subviews |
 | `w` | TiKV request latency/load |
 | `p` | Pause or resume automatic refresh |
 | `Space` | Refresh immediately |
@@ -115,7 +116,7 @@ Set `NO_COLOR=1` to disable colors as well.
 
 ### Cluster Activity
 
-The first line shows cluster throughput, latency, connections, errors, and component availability. The second line contains SQL-backed diagnostics:
+The first line shows cluster throughput, latency, connections, errors, and component availability. `QPS(1m)` and `TPS(1m)` are Prometheus rates smoothed over the latest minute; they use a different window from the short-interval Schema Load QPS shown by its actual `INTERVAL`, so the values are not expected to match exactly. The second line contains SQL-backed diagnostics:
 
 - `LONG QUERY`: non-Sleep rows in `CLUSTER_PROCESSLIST` whose elapsed time reaches the configured threshold.
 - `LONG TXN`: rows in `CLUSTER_TIDB_TRX` whose transaction duration reaches the configured threshold.
@@ -168,12 +169,23 @@ The connection ID is highlighted in red when session memory reaches 100 MiB or d
 
 ### Schema Load
 
-With SQL credentials configured, press `l` to open the Schema Load view. TiTop reads cumulative counters from `CLUSTER_STATEMENTS_SUMMARY` across all TiDB instances and uses `CLUSTER_STATEMENTS_SUMMARY_HISTORY` to bridge summary refresh boundaries. It aggregates by instance, schema, and summary window, calculates interval deltas between consecutive snapshots, and displays the top 15 schemas ordered by `TIME LOAD`.
+With SQL credentials configured, press `l` to open the Schema Load view. TiTop reads cumulative counters from `CLUSTER_STATEMENTS_SUMMARY` across all TiDB instances and uses `CLUSTER_STATEMENTS_SUMMARY_HISTORY` to bridge summary refresh boundaries. It aggregates by instance, schema, and summary window, calculates interval deltas between consecutive snapshots, and displays the top 20 schemas ordered by `TIME LOAD`. An empty schema remains displayed as `(none)`, meaning that no default schema was selected when the SQL statement ran.
 
-- `QPS`, `AVG LAT`, and `TIME LOAD` describe the latest successful sample interval. `TIME LOAD` is total schema execution time divided by interval duration; `1.00s/s` is approximately one continuously consumed execution-time core.
-- `EXEC`, `ERR`, `PROC KEYS`, `WRITE KEYS`, `AFFECT ROWS`, `MEM Σ`, and `DISK Σ` accumulate after TiTop establishes its initial baseline and reset when TiTop restarts.
+Press `o` to switch between two subviews:
+
+- `SCHEMA LOAD / OVERVIEW` shows overall QPS, write QPS, latency, time load, errors, keys, affected rows, and resource consumption, ordered by `TIME LOAD`.
+- `SCHEMA LOAD / KV` shows `TOTAL KEYS/s`, `PROC KEYS/s`, `MVCC AMP`, `COP TASK/s`, `COP/EXEC`, `BACKOFF/s`, `WRITE KEYS/s`, `WRITE SIZE/s`, and `TXN RETRY/s`, ordered by `TOTAL KEYS/s`.
+
+`MVCC AMP` is the interval ratio `TOTAL KEYS / PROC KEYS` and indicates MVCC read amplification. `COP/EXEC` is the average number of Coprocessor tasks generated per statement execution.
+
+KV subview colors use these thresholds: `MVCC AMP` is yellow at `2x` and red at `10x`; `COP/EXEC` is yellow at `100` and red at `1000`; positive `BACKOFF/s` and `TXN RETRY/s` values are yellow and become red at `10/s` and `1/s`, respectively. Other throughput metrics are green by default. These thresholds are visual hints rather than an alerting policy.
+
+- Every metric uses the latest successful sample period shown as `INTERVAL` in the title; no value accumulates for the lifetime of the TiTop process.
+- `QPS` is the rate of all statements. `WRITE QPS` is the execution rate of `INSERT`, `UPDATE`, `DELETE`, and `REPLACE`, which is more reliable than an approximate TPS attributed by the default schema of `COMMIT` statements.
+- `AVG LAT` is the interval-weighted average latency. `TIME LOAD` is total schema execution time divided by interval duration; `1.00s/s` is approximately one continuously consumed execution-time core.
+- `ERR/s` and `ERR%` are the error rate per second and the interval error percentage. `PROC KEYS/s`, `WRITE KEYS/s`, `AFFECT ROWS/s`, `MEM/s`, and `DISK/s` are interval deltas divided by the actual sample duration.
 - The first collection establishes a baseline, so load appears after the next refresh. Counter rollback, TiDB restart, or statement-summary reset never produces a negative delta and is reported as `RESET DETECTED`.
-- `MEM Σ` and `DISK Σ` are derived by multiplying statement-summary average per-execution usage by execution count. They represent observed cumulative SQL resource usage, not current resident memory or disk occupancy.
+- `MEM/s` and `DISK/s` multiply statement-summary average per-execution usage by interval executions and divide by duration. They represent SQL resource-consumption rates, not current resident memory or disk occupancy.
 
 Statement digests can be evicted because of `tidb_stmt_summary_max_stmt_count`, so this view is intended for real-time performance observation rather than audit-grade accounting.
 

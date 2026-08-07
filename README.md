@@ -105,6 +105,7 @@ export TITOP_MYSQL_PASSWORD='password'
 | `k` | TiKV 线程池 CPU |
 | `s` | SQL 类型和活跃会话 |
 | `l` | Schema Load 性能面板 |
+| `o` | 在 Schema Overview 和 KV 子视图间切换 |
 | `w` | TiKV 请求耗时 |
 | `p` | 暂停或继续自动刷新 |
 | `Space` | 立即刷新 |
@@ -115,7 +116,7 @@ export TITOP_MYSQL_PASSWORD='password'
 
 ### Cluster Activity
 
-第一行展示集群总体吞吐、延迟、连接、错误率和节点数。第二行展示依赖 SQL 连接的诊断状态：
+第一行展示集群总体吞吐、延迟、连接、错误率和节点数。`QPS(1m)` 和 `TPS(1m)` 是 Prometheus 最近一分钟的 rate 平滑值，与 Schema Load 按标题中实际 `INTERVAL` 计算的短周期 QPS 口径不同，不要求两者严格相等。第二行展示依赖 SQL 连接的诊断状态：
 
 - `LONG QUERY`：`CLUSTER_PROCESSLIST` 中非 Sleep 且运行时间达到阈值的会话数量。
 - `LONG TXN`：`CLUSTER_TIDB_TRX` 中持续时间达到阈值的事务数量。
@@ -168,12 +169,23 @@ SQL 页面不会重复展示 TOP 5 TiKV Request，以便为 SQL 信息保留更�
 
 ### Schema Load
 
-提供 SQL 凭据后，按 `l` 可打开 Schema Load 面板。TiTop 从 `CLUSTER_STATEMENTS_SUMMARY` 读取集群各 TiDB 实例的累计计数，并结合 `CLUSTER_STATEMENTS_SUMMARY_HISTORY` 衔接 summary 刷新窗口。数据先按实例、Schema 和 summary 窗口聚合，再通过相邻快照差值计算最近刷新区间的负载，默认按 `TIME LOAD` 降序显示 Top 15 Schema。
+提供 SQL 凭据后，按 `l` 可打开 Schema Load 面板。TiTop 从 `CLUSTER_STATEMENTS_SUMMARY` 读取集群各 TiDB 实例的累计计数，并结合 `CLUSTER_STATEMENTS_SUMMARY_HISTORY` 衔接 summary 刷新窗口。数据先按实例、Schema 和 summary 窗口聚合，再通过相邻快照差值计算最近刷新区间的负载，默认按 `TIME LOAD` 降序显示 Top 20 Schema。空 Schema 保持显示为 `(none)`，表示执行 SQL 时没有选定默认 Schema。
 
-- `QPS`、`AVG LAT` 和 `TIME LOAD` 表示最近一次有效采样区间；`TIME LOAD` 是 Schema 总执行时间除以区间时长，`1.00s/s` 约等于持续消耗一个执行时间核。
-- `EXEC`、`ERR`、`PROC KEYS`、`WRITE KEYS`、`AFFECT ROWS`、`MEM Σ` 和 `DISK Σ` 从 TiTop 建立初始基线后累计，重启 TiTop 后重新计算。
+按 `o` 可在两个子视图间切换：
+
+- `SCHEMA LOAD / OVERVIEW`：展示总体 QPS、写 QPS、延迟、时间负载、错误、Keys、影响行数及资源消耗，按 `TIME LOAD` 排序。
+- `SCHEMA LOAD / KV`：展示 `TOTAL KEYS/s`、`PROC KEYS/s`、`MVCC AMP`、`COP TASK/s`、`COP/EXEC`、`BACKOFF/s`、`WRITE KEYS/s`、`WRITE SIZE/s` 和 `TXN RETRY/s`，按 `TOTAL KEYS/s` 排序。
+
+`MVCC AMP` 为区间 `TOTAL KEYS / PROC KEYS`，用于观察 MVCC 读取放大；`COP/EXEC` 表示平均每次 SQL 执行产生的 Coprocessor Task 数量。
+
+KV 子视图颜色阈值：`MVCC AMP` 达到 `2x` 显示黄色、达到 `10x` 显示红色；`COP/EXEC` 达到 `100` 显示黄色、达到 `1000` 显示红色；`BACKOFF/s` 和 `TXN RETRY/s` 大于零显示黄色，分别达到 `10/s` 和 `1/s` 时显示红色。其余吞吐量指标默认显示绿色。这些阈值用于快速观察，不等同于告警策略。
+
+- 面板全部指标采用标题中 `INTERVAL` 标明的最近一次有效采样区间，不使用 TiTop 进程运行期累计值。
+- `QPS` 是全部 SQL 执行速率；`WRITE QPS` 是 `INSERT`、`UPDATE`、`DELETE` 和 `REPLACE` 的执行速率。它比按默认 Schema 归属 `COMMIT` 得出的近似 TPS 更可靠。
+- `AVG LAT` 是区间加权平均延迟；`TIME LOAD` 是 Schema 总执行时间除以区间时长，`1.00s/s` 约等于持续消耗一个执行时间核。
+- `ERR/s` 和 `ERR%` 分别表示每秒错误数和区间错误比例；`PROC KEYS/s`、`WRITE KEYS/s`、`AFFECT ROWS/s`、`MEM/s` 和 `DISK/s` 均为区间增量除以实际采样时长。
 - 第一次采集只建立基线，下一次刷新开始显示负载。计数器回退、TiDB 重启或 summary 清空时不会产生负增量，并显示 `RESET DETECTED`。
-- `MEM Σ` 和 `DISK Σ` 由 statement summary 的平均单次用量乘以执行次数后累计，表示观测期间的 SQL 资源使用总量，不代表当前驻留内存或磁盘占用。
+- `MEM/s` 和 `DISK/s` 由 statement summary 的平均单次用量乘以区间执行次数后再除以时长，表示 SQL 资源消耗速率，不代表当前驻留内存或磁盘占用。
 
 Statement Summary 可能因 `tidb_stmt_summary_max_stmt_count` 限制而淘汰 digest，因此该面板适合实时性能观察，不应作为审计级精确统计。
 

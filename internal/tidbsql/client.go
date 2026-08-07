@@ -33,7 +33,20 @@ type SchemaSample struct {
 }
 
 type SchemaCounters struct {
-	Executions, Errors, Latency, ProcessedKeys, WriteKeys, AffectedRows, Memory, Disk float64
+	Executions      float64
+	WriteExecutions float64
+	Errors          float64
+	Latency         float64
+	TotalKeys       float64
+	ProcessedKeys   float64
+	CopTasks        float64
+	Backoffs        float64
+	WriteKeys       float64
+	WriteSize       float64
+	TxnRetries      float64
+	AffectedRows    float64
+	Memory          float64
+	Disk            float64
 }
 
 type Client struct {
@@ -171,19 +184,27 @@ func (c *Client) ActiveSessions(ctx context.Context) ([]Session, error) {
 
 const schemaSummaryQuery = `
 SELECT INSTANCE, COALESCE(NULLIF(SCHEMA_NAME, ''), '(none)'), SUMMARY_BEGIN_TIME,
-       SUM(EXEC_COUNT), SUM(SUM_ERRORS), SUM(SUM_LATENCY),
-       SUM(AVG_PROCESSED_KEYS * EXEC_COUNT), SUM(AVG_WRITE_KEYS * EXEC_COUNT),
+       SUM(EXEC_COUNT),
+       SUM(CASE WHEN UPPER(STMT_TYPE) IN ('INSERT', 'UPDATE', 'DELETE', 'REPLACE')
+                THEN EXEC_COUNT ELSE 0 END),
+       SUM(SUM_ERRORS), SUM(SUM_LATENCY),
+       SUM(AVG_TOTAL_KEYS * EXEC_COUNT), SUM(AVG_PROCESSED_KEYS * EXEC_COUNT),
+       SUM(SUM_COP_TASK_NUM), SUM(SUM_BACKOFF_TIMES),
+       SUM(AVG_WRITE_KEYS * EXEC_COUNT), SUM(AVG_WRITE_SIZE * EXEC_COUNT),
+       SUM(AVG_TXN_RETRY * EXEC_COUNT),
        SUM(AVG_AFFECTED_ROWS * EXEC_COUNT), SUM(AVG_MEM * EXEC_COUNT),
        SUM(AVG_DISK * EXEC_COUNT)
 FROM (
-    SELECT INSTANCE, SCHEMA_NAME, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
-           SUM_LATENCY, AVG_PROCESSED_KEYS, AVG_WRITE_KEYS, AVG_AFFECTED_ROWS,
-           AVG_MEM, AVG_DISK
+    SELECT INSTANCE, SCHEMA_NAME, STMT_TYPE, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
+           SUM_LATENCY, AVG_TOTAL_KEYS, AVG_PROCESSED_KEYS, SUM_COP_TASK_NUM,
+           SUM_BACKOFF_TIMES, AVG_WRITE_KEYS, AVG_WRITE_SIZE, AVG_TXN_RETRY,
+           AVG_AFFECTED_ROWS, AVG_MEM, AVG_DISK
     FROM information_schema.CLUSTER_STATEMENTS_SUMMARY
     UNION ALL
-    SELECT INSTANCE, SCHEMA_NAME, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
-           SUM_LATENCY, AVG_PROCESSED_KEYS, AVG_WRITE_KEYS, AVG_AFFECTED_ROWS,
-           AVG_MEM, AVG_DISK
+    SELECT INSTANCE, SCHEMA_NAME, STMT_TYPE, SUMMARY_BEGIN_TIME, EXEC_COUNT, SUM_ERRORS,
+           SUM_LATENCY, AVG_TOTAL_KEYS, AVG_PROCESSED_KEYS, SUM_COP_TASK_NUM,
+           SUM_BACKOFF_TIMES, AVG_WRITE_KEYS, AVG_WRITE_SIZE, AVG_TXN_RETRY,
+           AVG_AFFECTED_ROWS, AVG_MEM, AVG_DISK
     FROM information_schema.CLUSTER_STATEMENTS_SUMMARY_HISTORY
     WHERE SUMMARY_END_TIME >= DATE_SUB(NOW(), INTERVAL ? SECOND)
 ) AS summaries
@@ -212,8 +233,11 @@ func (c *Client) SchemaSummary(ctx context.Context, since time.Time) ([]SchemaSa
 	for rows.Next() {
 		var sample SchemaSample
 		if err := rows.Scan(&sample.Instance, &sample.Schema, &sample.WindowBegin,
-			&sample.Counters.Executions, &sample.Counters.Errors, &sample.Counters.Latency,
-			&sample.Counters.ProcessedKeys, &sample.Counters.WriteKeys, &sample.Counters.AffectedRows,
+			&sample.Counters.Executions, &sample.Counters.WriteExecutions,
+			&sample.Counters.Errors, &sample.Counters.Latency, &sample.Counters.TotalKeys,
+			&sample.Counters.ProcessedKeys, &sample.Counters.CopTasks, &sample.Counters.Backoffs,
+			&sample.Counters.WriteKeys, &sample.Counters.WriteSize, &sample.Counters.TxnRetries,
+			&sample.Counters.AffectedRows,
 			&sample.Counters.Memory, &sample.Counters.Disk); err != nil {
 			return nil, err
 		}

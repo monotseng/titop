@@ -124,3 +124,30 @@ func TestWorkloadColor(t *testing.T) {
 		t.Fatalf("high CPU workload color = %q, want red", got)
 	}
 }
+
+func TestSchemaKVColors(t *testing.T) {
+	if got := mvccAmplificationColor(1.99); got != green {
+		t.Fatalf("low MVCC amplification color = %q, want green", got)
+	}
+	if got := mvccAmplificationColor(2); got != yellow {
+		t.Fatalf("medium MVCC amplification color = %q, want yellow", got)
+	}
+	if got := mvccAmplificationColor(10); got != red+bold {
+		t.Fatalf("high MVCC amplification color = %q, want red", got)
+	}
+	if got := copPerExecutionColor(100); got != yellow {
+		t.Fatalf("medium COP/EXEC color = %q, want yellow", got)
+	}
+	if got := copPerExecutionColor(1000); got != red+bold {
+		t.Fatalf("high COP/EXEC color = %q, want red", got)
+	}
+	if got := eventRateColor(0, 10); got != green {
+		t.Fatalf("zero event rate color = %q, want green", got)
+	}
+	if got := eventRateColor(1, 10); got != yellow {
+		t.Fatalf("positive event rate color = %q, want yellow", got)
+	}
+	if got := eventRateColor(10, 10); got != red+bold {
+		t.Fatalf("high event rate color = %q, want red", got)
+	}
+}

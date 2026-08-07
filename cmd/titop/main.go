@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -97,12 +98,12 @@ func main() {
 			}
 		}
 	}
-	current, previous, paused := instances, instances, false
+	current, previous, paused, schemaKV := instances, instances, false, false
 	color := !noColor && !once && !plain && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && isTerminal(os.Stdout)
 	snap := collect(ctx, promClient, timeout, clusterName)
 	sqlSnap := collectSQL(ctx, sqlClient, schemaTracker, snap.Instances, timeout, longQueryThreshold, longTxnThreshold)
 	for {
-		draw(endpoint, snap, sqlSnap, sqlClient, current, paused, interval, longQueryThreshold, longTxnThreshold, highQPS, highTPS, plain || once, color)
+		draw(endpoint, snap, sqlSnap, sqlClient, current, schemaKV, paused, interval, longQueryThreshold, longTxnThreshold, highQPS, highTPS, plain || once, color)
 		if once {
 			if len(snap.Errors) > 0 {
 				os.Exit(1)
@@ -135,6 +136,10 @@ func main() {
 				current = sqlTypes
 			case 'l', 'L':
 				current = schemaLoads
+			case 'o', 'O':
+				if current == schemaLoads {
+					schemaKV = !schemaKV
+				}
 			case 'w', 'W':
 				current = waits
 			case 'k', 'K':
@@ -216,7 +221,7 @@ func readKeys(ch chan<- byte) {
 	}
 }
 
-func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *tidbsql.Client, v view, paused bool, interval, longQueryThreshold, longTxnThreshold time.Duration, highQPS, highTPS float64, noClear, color bool) {
+func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *tidbsql.Client, v view, schemaKV, paused bool, interval, longQueryThreshold, longTxnThreshold time.Duration, highQPS, highTPS float64, noClear, color bool) {
 	width := displayWidth()
 	if !noClear {
 		fmt.Print("\033[H\033[2J")
@@ -237,7 +242,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 	fmt.Printf("CLUSTER %-24.24s PROMETHEUS %-38.38s SNAPSHOT %s\n", cluster, endpoint, s.At.Format("2006-01-02 15:04:05"))
 	line(width)
 	section(color, "CLUSTER ACTIVITY")
-	fmt.Printf(" QPS %s  TPS %s  P99 %s  CONN %s  ACTIVE %s  ERR/s %s  NODES %s\n",
+	fmt.Printf(" QPS(1m) %s  TPS(1m) %s  P99 %s  CONN %s  ACTIVE %s  ERR/s %s  NODES %s\n",
 		paint(color, workloadColor(s, s.QPS, highQPS), fmt.Sprintf("%9.2f", s.QPS)),
 		paint(color, workloadColor(s, s.TPS, highTPS), fmt.Sprintf("%9.2f", s.TPS)),
 		paint(color, latencyColor(s.P99), fmt.Sprintf("%9s", duration(s.P99))),
@@ -264,7 +269,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 			renderActiveSessions(sqlSnap.sessions, sqlSnap.sessionErr, sqlClient.Address(), width, color)
 		}
 	case schemaLoads:
-		renderSchemaLoad(sqlSnap.schemaLoad, sqlSnap.schemaErr, sqlClient, color)
+		renderSchemaLoad(sqlSnap.schemaLoad, sqlSnap.schemaErr, sqlClient, schemaKV, color)
 	case waits:
 		renderRequests("TiKV CLIENT REQUEST LOAD", s.Requests, color)
 	case tikvThreads:
@@ -273,7 +278,7 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 		renderInstances(s.Instances, color)
 	}
 	line(width)
-	fmt.Print("Keys: [i]nstances ti[k]v threads [s]ql types schema [l]oad [w]aits [p]ause [space] refresh [h]elp [q]uit")
+	fmt.Print("Keys: [i]nstances ti[k]v threads [s]ql types schema [l]oad/m[o]de [w]aits [p]ause [space] refresh [h]elp [q]uit")
 	if len(s.Errors) > 0 {
 		fmt.Print(paint(color, red+bold, fmt.Sprintf("  WARN:%d", len(s.Errors))))
 	}
@@ -407,47 +412,134 @@ func renderActiveSessions(rows []tidbsql.Session, err error, address string, wid
 	}
 }
 
-func renderSchemaLoad(snapshot tidbsql.SchemaLoadSnapshot, err error, client *tidbsql.Client, color bool) {
-	title := "SCHEMA LOAD"
+func renderSchemaLoad(snapshot tidbsql.SchemaLoadSnapshot, err error, client *tidbsql.Client, kv bool, color bool) {
+	mode, order := "OVERVIEW", "TIME LOAD"
+	if kv {
+		mode, order = "KV", "TOTAL KEYS/s"
+	}
+	title := "SCHEMA LOAD / " + mode
 	if client != nil && client.Address() != "" {
 		title += " (target " + client.Address() + ")"
 	}
-	section(color, title)
+	fmt.Print(paint(color, bold+cyan, title))
 	if client == nil {
+		fmt.Println()
 		fmt.Println(" (requires TiDB SQL credentials: provide -u and -p)")
 		return
 	}
 	if err != nil {
+		fmt.Println()
 		fmt.Println(paint(color, red, " "+err.Error()))
 		return
 	}
 	if snapshot.Baseline {
+		fmt.Println()
 		fmt.Println(" (baseline established; load appears after the next refresh)")
 		return
 	}
-	status := fmt.Sprintf(" INTERVAL %s  ACCUMULATED %s  ORDER BY TIME LOAD",
-		shortElapsed(snapshot.Interval), shortElapsed(snapshot.SampledAt.Sub(snapshot.StartedAt)))
+	status := fmt.Sprintf("  INTERVAL %s  ORDER BY %s", shortElapsed(snapshot.Interval), order)
 	if snapshot.Reset {
 		status += paint(color, yellow, "  RESET DETECTED")
 	}
 	fmt.Println(status)
-	fmt.Printf(" %-24s %10s %11s %11s %11s %8s %12s %12s %12s %10s %10s\n",
-		"SCHEMA", "QPS", "AVG LAT", "TIME LOAD", "EXEC", "ERR", "PROC KEYS", "WRITE KEYS", "AFFECT ROWS", "MEM Σ", "DISK Σ")
+	if kv {
+		renderSchemaKV(snapshot, color)
+		return
+	}
+	renderSchemaOverview(snapshot, color)
+}
+
+func renderSchemaOverview(snapshot tidbsql.SchemaLoadSnapshot, color bool) {
+	fmt.Printf(" %-24s %9s %9s %11s %11s %8s %8s %12s %12s %13s %10s %10s\n",
+		"SCHEMA", "QPS", "WRITE QPS", "AVG LAT", "TIME LOAD", "ERR/s", "ERR%",
+		"PROC KEYS/s", "WRITE KEYS/s", "AFFECT ROWS/s", "MEM/s", "DISK/s")
 	if len(snapshot.Rows) == 0 {
 		fmt.Println(" (no schema activity during this interval)")
 		return
 	}
-	for _, row := range limit(snapshot.Rows, 15) {
-		fmt.Printf(" %-24.24s %s %s %s %11s %s %12s %12s %12s %10s %10s\n",
+	seconds := snapshot.Interval.Seconds()
+	for _, row := range limit(snapshot.Rows, 20) {
+		fmt.Printf(" %-24.24s %s %s %s %s %s %s %12s %12s %13s %10s %10s\n",
 			row.Schema,
-			paint(color, green, fmt.Sprintf("%10.2f", row.QPS)),
+			paint(color, green, fmt.Sprintf("%9.2f", row.QPS)),
+			paint(color, green, fmt.Sprintf("%9.2f", row.WriteQPS)),
 			paint(color, latencyColor(row.AverageLatency.Seconds()), fmt.Sprintf("%11s", duration(row.AverageLatency.Seconds()))),
 			paint(color, yellow, fmt.Sprintf("%9.2fs/s", row.TimeLoad)),
-			compactNumber(row.Cumulative.Executions),
-			paint(color, positiveBad(row.Cumulative.Errors), fmt.Sprintf("%8s", compactNumber(row.Cumulative.Errors))),
-			compactNumber(row.Cumulative.ProcessedKeys), compactNumber(row.Cumulative.WriteKeys),
-			compactNumber(row.Cumulative.AffectedRows), bytes(row.Cumulative.Memory), bytes(row.Cumulative.Disk))
+			paint(color, positiveBad(row.Interval.Errors), fmt.Sprintf("%8s", compactNumber(row.Interval.Errors/seconds))),
+			paint(color, positiveBad(row.ErrorRate), fmt.Sprintf("%7.2f%%", row.ErrorRate*100)),
+			compactNumber(row.Interval.ProcessedKeys/seconds), compactNumber(row.Interval.WriteKeys/seconds),
+			compactNumber(row.Interval.AffectedRows/seconds), bytes(row.Interval.Memory/seconds), bytes(row.Interval.Disk/seconds))
 	}
+}
+
+func renderSchemaKV(snapshot tidbsql.SchemaLoadSnapshot, color bool) {
+	fmt.Printf(" %-24s %13s %12s %9s %11s %10s %10s %12s %12s %11s\n",
+		"SCHEMA", "TOTAL KEYS/s", "PROC KEYS/s", "MVCC AMP", "COP TASK/s", "COP/EXEC",
+		"BACKOFF/s", "WRITE KEYS/s", "WRITE SIZE/s", "TXN RETRY/s")
+	if len(snapshot.Rows) == 0 {
+		fmt.Println(" (no schema activity during this interval)")
+		return
+	}
+	seconds := snapshot.Interval.Seconds()
+	rows := append([]tidbsql.SchemaLoad(nil), snapshot.Rows...)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Interval.TotalKeys > rows[j].Interval.TotalKeys
+	})
+	for _, row := range limit(rows, 20) {
+		mvccAmp, copPerExec := 0.0, 0.0
+		mvccText, copText := "-", "-"
+		if row.Interval.ProcessedKeys > 0 {
+			mvccAmp = row.Interval.TotalKeys / row.Interval.ProcessedKeys
+			mvccText = fmt.Sprintf("%.2fx", mvccAmp)
+		}
+		if row.Interval.Executions > 0 {
+			copPerExec = row.Interval.CopTasks / row.Interval.Executions
+			copText = fmt.Sprintf("%.2f", copPerExec)
+		}
+		backoffRate := row.Interval.Backoffs / seconds
+		retryRate := row.Interval.TxnRetries / seconds
+		fmt.Printf(" %-24.24s %s %s %s %s %s %s %s %s %s\n",
+			row.Schema,
+			paint(color, green, fmt.Sprintf("%13s", compactNumber(row.Interval.TotalKeys/seconds))),
+			paint(color, green, fmt.Sprintf("%12s", compactNumber(row.Interval.ProcessedKeys/seconds))),
+			paint(color, mvccAmplificationColor(mvccAmp), fmt.Sprintf("%9s", mvccText)),
+			paint(color, green, fmt.Sprintf("%11s", compactNumber(row.Interval.CopTasks/seconds))),
+			paint(color, copPerExecutionColor(copPerExec), fmt.Sprintf("%10s", copText)),
+			paint(color, eventRateColor(backoffRate, 10), fmt.Sprintf("%10s", compactNumber(backoffRate))),
+			paint(color, green, fmt.Sprintf("%12s", compactNumber(row.Interval.WriteKeys/seconds))),
+			paint(color, green, fmt.Sprintf("%12s", bytes(row.Interval.WriteSize/seconds))),
+			paint(color, eventRateColor(retryRate, 1), fmt.Sprintf("%11s", compactNumber(retryRate))))
+	}
+}
+
+func mvccAmplificationColor(value float64) string {
+	if value >= 10 {
+		return red + bold
+	}
+	if value >= 2 {
+		return yellow
+	}
+	return green
+}
+
+func copPerExecutionColor(value float64) string {
+	if value >= 1000 {
+		return red + bold
+	}
+	if value >= 100 {
+		return yellow
+	}
+	return green
+}
+
+func eventRateColor(value, redAt float64) string {
+	if value >= redAt {
+		return red + bold
+	}
+	if value > 0 {
+		return yellow
+	}
+	return green
 }
 
 func digestID(digest string) string {
@@ -531,7 +623,8 @@ func renderRequests(title string, rows []monitor.RequestStat, color bool) {
 func renderHelp(color bool) {
 	section(color, "INTERACTIVE HELP")
 	fmt.Println(" i  All cluster nodes        s  SQL types / active sessions")
-	fmt.Println(" l  Schema load              k  TiKV thread-pool CPU")
+	fmt.Println(" l  Schema load              o  Schema overview/KV mode")
+	fmt.Println(" k  TiKV thread-pool CPU")
 	fmt.Println(" w  TiKV request-time view")
 	fmt.Println(" p  Pause/resume automatic refresh")
 	fmt.Println(" Space  Refresh immediately  h/?  Toggle this help     q  Quit")
