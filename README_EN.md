@@ -6,6 +6,9 @@ TiTop is a lightweight, near-real-time terminal monitor for TiDB clusters, inspi
 
 Prometheus is the only required data source. TiDB credentials are optional and are used exclusively for SQL-enhanced diagnostics.
 
+> [!CAUTION]
+> **The code for this tool was generated with AI assistance.** AI-generated code can contain defects, incomplete compatibility handling, or undiscovered security risks. Users must review the code, test it thoroughly in a non-production environment, and independently assess whether it is suitable for their systems and production use. Users assume all performance, security, data, and availability risks arising from running TiTop. When connecting to TiDB, use a dedicated least-privilege read-only monitoring account; never use `root` or another highly privileged account.
+
 ## Features
 
 - Cluster activity: QPS, TPS, P99 latency, connections, active sessions, errors, and TiDB/TiKV/PD availability.
