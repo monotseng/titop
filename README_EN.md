@@ -119,7 +119,7 @@ Set `NO_COLOR=1` to disable colors as well.
 
 ### Cluster Activity
 
-The first line shows cluster throughput, latency, connections, errors, and component availability. `QPS(1m)` and `TPS(1m)` are Prometheus rates smoothed over the latest minute; they use a different window from the short-interval Schema Load QPS shown by its actual `INTERVAL`, so the values are not expected to match exactly. The second line contains SQL-backed diagnostics:
+The first line shows cluster throughput, latency, connections, errors, component availability, and version. `QPS(1m)` and `TPS(1m)` are Prometheus rates smoothed over the latest minute; they use a different window from the short-interval Schema Load QPS shown by its actual `INTERVAL`, so the values are not expected to match exactly. When all TiDB, TiKV, and PD node versions agree, `VERSION` shows the version in green; multiple versions produce a red `MIXED`; incomplete version metrics produce a default-color `N/A`. The second line contains SQL-backed diagnostics:
 
 - `LONG QUERY`: non-Sleep rows in `CLUSTER_PROCESSLIST` whose elapsed time reaches the configured threshold.
 - `LONG TXN`: rows in `CLUSTER_TIDB_TRX` whose transaction duration reaches the configured threshold.
@@ -137,7 +137,7 @@ TLS status values:
 
 ### Cluster Nodes
 
-Nodes are ordered with DOWN instances first, then by descending CPU. TiKV `LREAD/s` and `LWRITE/s` values come from `tikv_storage_command_total`; they represent logical storage command rates, not physical disk IOPS.
+Nodes are ordered with DOWN instances first, then by descending CPU. QPS applies only to TiDB, so TiKV and PD nodes display `-`. The node table no longer repeats versions; the consolidated cluster version appears after `NODES` in Cluster Activity. TiKV `LREAD/s` and `LWRITE/s` values come from `tikv_storage_command_total`; they represent logical storage command rates, not physical disk IOPS.
 
 CPU is expressed relative to one core, so a multithreaded process can exceed 100%. RSS/HOST% depends on node_exporter host-memory metrics and displays `-` when no host can be matched.
 

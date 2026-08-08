@@ -242,14 +242,15 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 	fmt.Printf("CLUSTER %-24.24s PROMETHEUS %-38.38s SNAPSHOT %s\n", cluster, endpoint, s.At.Format("2006-01-02 15:04:05"))
 	line(width)
 	section(color, "CLUSTER ACTIVITY")
-	fmt.Printf(" QPS(1m) %s  TPS(1m) %s  P99 %s  CONN %s  ACTIVE %s  ERR/s %s  NODES %s\n",
+	fmt.Printf(" QPS(1m) %s  TPS(1m) %s  P99 %s  CONN %s  ACTIVE %s  ERR/s %s  NODES %s  VERSION %s\n",
 		paint(color, workloadColor(s, s.QPS, highQPS), fmt.Sprintf("%9.2f", s.QPS)),
 		paint(color, workloadColor(s, s.TPS, highTPS), fmt.Sprintf("%9.2f", s.TPS)),
 		paint(color, latencyColor(s.P99), fmt.Sprintf("%9s", duration(s.P99))),
 		paint(color, green, fmt.Sprintf("%7.0f", s.Connections)),
 		paint(color, green, fmt.Sprintf("%6.0f", s.Active)),
 		paint(color, positiveBad(s.ErrorRate), fmt.Sprintf("%7.2f", s.ErrorRate)),
-		paint(color, nodeColor(s), fmt.Sprintf("TiDB:%d TiKV:%d PD:%d", s.TiDBUp, s.TiKVUp, s.PDUp)))
+		paint(color, nodeColor(s), fmt.Sprintf("TiDB:%d TiKV:%d PD:%d", s.TiDBUp, s.TiKVUp, s.PDUp)),
+		clusterVersionMetric(s.Instances, color))
 	fmt.Printf(" LONG QUERY (>=%s) %s  LONG TXN (>=%s) %s  TLS %s\n",
 		shortThreshold(longQueryThreshold), sqlMetric(sqlClient != nil && sqlSnap.sessionErr == nil, sqlSnap.longQueries, color),
 		shortThreshold(longTxnThreshold), sqlMetric(sqlClient != nil && sqlSnap.transactionErr == nil, sqlSnap.longTransactions, color),
@@ -287,16 +288,61 @@ func draw(endpoint string, s monitor.Snapshot, sqlSnap sqlSnapshot, sqlClient *t
 
 func renderInstances(rows []monitor.Instance, color bool) {
 	section(color, "ALL CLUSTER NODES (DOWN first, then CPU descending)")
-	fmt.Printf(" %-19s %6s %8s %10s %9s %7s %7s %9s %9s %9s %9s %9s %9s %12s\n", "INSTANCE", "ROLE", "STATUS", "UPTIME", "QPS", "CONN", "ACTIVE", "CPU", "RSS", "HOST MEM", "RSS/HOST%", "LREAD/s", "LWRITE/s", "VERSION")
+	fmt.Printf(" %-19s %6s %8s %10s %9s %7s %7s %9s %9s %9s %9s %9s %9s\n", "INSTANCE", "ROLE", "STATUS", "UPTIME", "QPS", "CONN", "ACTIVE", "CPU", "RSS", "HOST MEM", "RSS/HOST%", "LREAD/s", "LWRITE/s")
 	if len(rows) == 0 {
 		fmt.Println(" (no TiDB instance metrics returned)")
 	}
 	for _, r := range rows {
-		fmt.Printf(" %-19.19s %6s %s %10s %s %7.0f %7.0f %s %9s %9s %s %9s %9s %12.12s\n", r.Name, r.Role, status(r.Status, color), nodeUptime(r),
-			paint(color, green, fmt.Sprintf("%9.2f", r.QPS)), r.Connections, r.Active,
+		fmt.Printf(" %-19.19s %6s %s %10s %s %7.0f %7.0f %s %9s %9s %s %9s %9s\n", r.Name, r.Role, status(r.Status, color), nodeUptime(r),
+			instanceQPS(r, color), r.Connections, r.Active,
 			paint(color, cpuColor(r.CPU), fmt.Sprintf("%8.2f%%", r.CPU*100)), bytes(r.Memory), optionalBytes(r.HostMemory), memoryPercent(r.Memory, r.HostMemory, color),
-			logicalOPS(r, r.LogicalReads, color), logicalOPS(r, r.LogicalWrites, color), displayVersion(r.Version))
+			logicalOPS(r, r.LogicalReads, color), logicalOPS(r, r.LogicalWrites, color))
 	}
+}
+
+func instanceQPS(row monitor.Instance, color bool) string {
+	if row.Role != "TIDB" {
+		return fmt.Sprintf("%9s", "-")
+	}
+	return paint(color, green, fmt.Sprintf("%9.2f", row.QPS))
+}
+
+func clusterVersionMetric(rows []monitor.Instance, color bool) string {
+	value, available, consistent := clusterVersion(rows)
+	if !available {
+		return "N/A"
+	}
+	if !consistent {
+		return paint(color, red+bold, value)
+	}
+	return paint(color, green, value)
+}
+
+func clusterVersion(rows []monitor.Instance) (value string, available, consistent bool) {
+	versions := make(map[string]string)
+	missing := false
+	for _, row := range rows {
+		if row.Role != "TIDB" && row.Role != "TIKV" && row.Role != "PD" {
+			continue
+		}
+		version := displayVersion(strings.TrimSpace(row.Version))
+		if version == "" || version == "-" {
+			missing = true
+			continue
+		}
+		normalized := strings.TrimPrefix(strings.ToLower(version), "v")
+		versions[normalized] = version
+	}
+	if len(versions) > 1 {
+		return "MIXED", true, false
+	}
+	if len(versions) == 0 || missing {
+		return "N/A", false, false
+	}
+	for _, version := range versions {
+		return version, true, true
+	}
+	return "N/A", false, false
 }
 
 func logicalOPS(r monitor.Instance, value float64, color bool) string {

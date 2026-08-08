@@ -151,3 +151,37 @@ func TestSchemaKVColors(t *testing.T) {
 		t.Fatalf("high event rate color = %q, want red", got)
 	}
 }
+
+func TestInstanceQPS(t *testing.T) {
+	if got := instanceQPS(monitor.Instance{Role: "TIDB", QPS: 12.5}, false); got != "    12.50" {
+		t.Fatalf("TiDB QPS = %q, want numeric value", got)
+	}
+	for _, role := range []string{"TIKV", "PD"} {
+		if got := instanceQPS(monitor.Instance{Role: role, QPS: 12.5}, false); got != "        -" {
+			t.Fatalf("%s QPS = %q, want dash", role, got)
+		}
+	}
+}
+
+func TestClusterVersion(t *testing.T) {
+	consistent := []monitor.Instance{
+		{Role: "TIDB", Version: "5.7.25-TiDB-v8.5.3"},
+		{Role: "TIKV", Version: "v8.5.3"},
+		{Role: "PD", Version: "8.5.3"},
+	}
+	value, available, same := clusterVersion(consistent)
+	if value != "8.5.3" && value != "v8.5.3" {
+		t.Fatalf("consistent version = %q, want 8.5.3", value)
+	}
+	if !available || !same {
+		t.Fatalf("consistent version state = available:%v same:%v", available, same)
+	}
+	mixed := append(append([]monitor.Instance(nil), consistent...), monitor.Instance{Role: "TIKV", Version: "v8.5.4"})
+	if value, available, same := clusterVersion(mixed); value != "MIXED" || !available || same {
+		t.Fatalf("mixed version = %q, available:%v same:%v", value, available, same)
+	}
+	missing := append(append([]monitor.Instance(nil), consistent...), monitor.Instance{Role: "PD"})
+	if value, available, same := clusterVersion(missing); value != "N/A" || available || same {
+		t.Fatalf("missing version = %q, available:%v same:%v", value, available, same)
+	}
+}

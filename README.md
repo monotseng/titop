@@ -119,7 +119,7 @@ export TITOP_MYSQL_PASSWORD='password'
 
 ### Cluster Activity
 
-第一行展示集群总体吞吐、延迟、连接、错误率和节点数。`QPS(1m)` 和 `TPS(1m)` 是 Prometheus 最近一分钟的 rate 平滑值，与 Schema Load 按标题中实际 `INTERVAL` 计算的短周期 QPS 口径不同，不要求两者严格相等。第二行展示依赖 SQL 连接的诊断状态：
+第一行展示集群总体吞吐、延迟、连接、错误率、节点数和组件版本。`QPS(1m)` 和 `TPS(1m)` 是 Prometheus 最近一分钟的 rate 平滑值，与 Schema Load 按标题中实际 `INTERVAL` 计算的短周期 QPS 口径不同，不要求两者严格相等。TiDB、TiKV 和 PD 所有节点版本一致时，`VERSION` 显示绿色版本号；检测到多个版本时显示红色 `MIXED`；版本指标不完整时显示默认色 `N/A`。第二行展示依赖 SQL 连接的诊断状态：
 
 - `LONG QUERY`：`CLUSTER_PROCESSLIST` 中非 Sleep 且运行时间达到阈值的会话数量。
 - `LONG TXN`：`CLUSTER_TIDB_TRX` 中持续时间达到阈值的事务数量。
@@ -137,7 +137,7 @@ TLS 状态含义：
 
 ### All Cluster Nodes
 
-节点按 DOWN 优先、CPU 降序排列。TiKV 的 `LREAD/s` 和 `LWRITE/s` 来源于 `tikv_storage_command_total`，表示逻辑存储命令速率，不是物理磁盘 IOPS。
+节点按 DOWN 优先、CPU 降序排列。QPS 仅适用于 TiDB，因此 TiKV 和 PD 节点显示 `-`。节点表不再重复展示版本，集群版本统一显示在 Cluster Activity 的 `NODES` 后面。TiKV 的 `LREAD/s` 和 `LWRITE/s` 来源于 `tikv_storage_command_total`，表示逻辑存储命令速率，不是物理磁盘 IOPS。
 
 CPU 以单核为 100%：多线程进程可能超过 100%。RSS/HOST% 依赖 node_exporter 的主机内存指标；无法匹配主机时显示 `-`。
 
